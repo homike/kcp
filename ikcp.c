@@ -141,6 +141,7 @@ static inline long _itimediff(IUINT32 later, IUINT32 earlier)
 //---------------------------------------------------------------------
 // manage segment
 //---------------------------------------------------------------------
+// 方便定义结构体时可以 IKCPSEG xx, 而不是 struct IKCPSEG xx;
 typedef struct IKCPSEG IKCPSEG;
 
 static void* (*ikcp_malloc_hook)(size_t) = NULL;
@@ -341,7 +342,6 @@ void ikcp_release(ikcpcb *kcp)
 	}
 }
 
-
 //---------------------------------------------------------------------
 // set output callback, which will be invoked by kcp
 //---------------------------------------------------------------------
@@ -465,6 +465,12 @@ int ikcp_peeksize(const ikcpcb *kcp)
 
 //---------------------------------------------------------------------
 // user/upper level send, returns below zero for error
+// ikcpcb 中定义了发送相关的缓冲队列和 buf，分别是 snd_queue 和 snd_buf。
+// 应用层调用 ikcp_send 后，数据将会进入到 snd_queue 中，而下层函数 ikcp_flush 将会决定将多少数据从 snd_queue 中移到 snd_buf 中，进行发送
+//
+// 分片分为两种模式: 
+//          流模式: 检测每个发送队列里的分片是否达到最大MSS，如果没有达到就会用新的数据填充分片。接收端会把多片发送的数据重组为一个完整的KCP包
+//          消息模式: 将用户数据分片，为每个分片设置sn和frag，将分片后的数据一个一个地存入发送队列，接收方通过sn和frag解析原来的包，消息一个分片的数据量可能不能达到MSS，也会作为一个包发送出去
 //---------------------------------------------------------------------
 int ikcp_send(ikcpcb *kcp, const char *buffer, int len)
 {
@@ -475,6 +481,7 @@ int ikcp_send(ikcpcb *kcp, const char *buffer, int len)
 	if (len < 0) return -1;
 
 	// append to previous segment in streaming mode (if possible)
+    // 如果当前的 KCP 开启流模式，取出 `snd_queue` 中的最后一个报文, 其填充到 mss 的长度，并设置其 frg 为 0.
 	if (kcp->stream != 0) {
 		if (!iqueue_is_empty(&kcp->snd_queue)) {
 			IKCPSEG *old = iqueue_entry(kcp->snd_queue.prev, IKCPSEG, node);
@@ -504,6 +511,7 @@ int ikcp_send(ikcpcb *kcp, const char *buffer, int len)
 		}
 	}
 
+    // 计算剩下的数据需要分成几段
 	if (len <= (int)kcp->mss) count = 1;
 	else count = (len + kcp->mss - 1) / kcp->mss;
 
@@ -512,6 +520,7 @@ int ikcp_send(ikcpcb *kcp, const char *buffer, int len)
 	if (count == 0) count = 1;
 
 	// fragment
+    // 为剩下的数据创建 KCP segment
 	for (i = 0; i < count; i++) {
 		int size = len > (int)kcp->mss ? (int)kcp->mss : len;
 		seg = ikcp_segment_new(kcp, size);
@@ -523,9 +532,10 @@ int ikcp_send(ikcpcb *kcp, const char *buffer, int len)
 			memcpy(seg->data, buffer, size);
 		}
 		seg->len = size;
+        //  流模式情况下分片编号不用填写
 		seg->frg = (kcp->stream == 0)? (count - i - 1) : 0;
 		iqueue_init(&seg->node);
-		iqueue_add_tail(&seg->node, &kcp->snd_queue);
+		iqueue_add_tail(&seg->node, &kcp->snd_queue); // 加入到 snd_queue 中
 		kcp->nsnd_que++;
 		if (buffer) {
 			buffer += size;
@@ -927,6 +937,11 @@ static int ikcp_wnd_unused(const ikcpcb *kcp)
 
 //---------------------------------------------------------------------
 // ikcp_flush
+// 1. 检查 kcp->update 是否更新，未更新直接返回。kcp->update 由 ikcp_update 更新，上层应用需要每隔一段时间（10-100ms）调用 ikcp_update 来驱动 KCP 发送数据
+// 2. 准备将 acklist 中记录的 ACK 报文发送出去，即从 acklist 中填充 ACK 报文的 sn 和 ts 字段
+// 3. 检查当前是否需要对远端窗口进行探测。
+// 由于 KCP 流量控制依赖于远端通知其可接受窗口的大小，一旦远端接受窗口 kcp->rmt_wnd 为0，那么本地将不会再向远端发送数据
+// 因此就没有机会从远端接受 ACK 报文，从而没有机会更新远端窗口大小。在这种情况下，KCP 需要发送窗口探测报文到远端，待远端回复窗口大小后，后续传输可以继续
 //---------------------------------------------------------------------
 void ikcp_flush(ikcpcb *kcp)
 {
@@ -969,7 +984,7 @@ void ikcp_flush(ikcpcb *kcp)
 
 	// probe window size (if remote window size equals zero)
 	if (kcp->rmt_wnd == 0) {
-		if (kcp->probe_wait == 0) {
+		if (kcp->probe_wait == 0) { // 初始化探测间隔和下一次探测时间
 			kcp->probe_wait = IKCP_PROBE_INIT;
 			kcp->ts_probe = kcp->current + kcp->probe_wait;
 		}	
@@ -981,7 +996,7 @@ void ikcp_flush(ikcpcb *kcp)
 				if (kcp->probe_wait > IKCP_PROBE_LIMIT)
 					kcp->probe_wait = IKCP_PROBE_LIMIT;
 				kcp->ts_probe = kcp->current + kcp->probe_wait;
-				kcp->probe |= IKCP_ASK_SEND;
+				kcp->probe |= IKCP_ASK_SEND;  // 标识需要探测远端窗口
 			}
 		}
 	}	else {
@@ -1179,6 +1194,10 @@ void ikcp_update(ikcpcb *kcp, IUINT32 current)
 // Important to reduce unnacessary ikcp_update invoking. use it to 
 // schedule ikcp_update (eg. implementing an epoll-like mechanism, 
 // or optimize ikcp_update when handling massive kcp connections)
+// 确定何时调用ikcp_update
+// 返回调用ikcp_update的时间(毫秒), 如果不是正在调用 ikcp_input / ikcp_send
+// 你可以在指定时间内调用ikcp_update 而不是重复调用update
+// 用该函数来减少不必要的ikcp_update更新很重要(实现类似epoll的机制 和 大量连接时优化ikcp_udpate)
 //---------------------------------------------------------------------
 IUINT32 ikcp_check(const ikcpcb *kcp, IUINT32 current)
 {
@@ -1217,8 +1236,6 @@ IUINT32 ikcp_check(const ikcpcb *kcp, IUINT32 current)
 
 	return current + minimal;
 }
-
-
 
 int ikcp_setmtu(ikcpcb *kcp, int mtu)
 {
@@ -1267,7 +1284,6 @@ int ikcp_nodelay(ikcpcb *kcp, int nodelay, int interval, int resend, int nc)
 	}
 	return 0;
 }
-
 
 int ikcp_wndsize(ikcpcb *kcp, int sndwnd, int rcvwnd)
 {

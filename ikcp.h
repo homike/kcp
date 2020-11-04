@@ -263,54 +263,71 @@ typedef struct IQUEUEHEAD iqueue_head;
 
 //=====================================================================
 // SEGMENT
+// IKCPSEG 是 KCP 一个报文的结构
+// KCP 报文结构
+// +----------+---+---+------+
+// |   conv   |cmd|frg|  wnd |
+// +----------+--------------+
+// |   ts     |     sn       |
+// +----------+--------------+
+// |   una    |     len      |
+// +-------------------------+
+// |        Data             |
+// +-------------------------+
 //=====================================================================
 struct IKCPSEG
 {
-	struct IQUEUEHEAD node;
-	IUINT32 conv;
-	IUINT32 cmd;
-	IUINT32 frg;
-	IUINT32 wnd;
-	IUINT32 ts;
-	IUINT32 sn;
-	IUINT32 una;
-	IUINT32 len;
-	IUINT32 resendts;
-	IUINT32 rto;
-	IUINT32 fastack;
-	IUINT32 xmit;
-	char data[1];
+	struct IQUEUEHEAD node; // 节点用来串接多个 KCP segment，也就是前向后向指针；
+	IUINT32 conv;           // 会话编号, 通信双方需要保证conv相同, 相互的数据包才能被认可
+	IUINT32 cmd;            // 分片的类型, IKCP_CMD_PUSH:数据分片 IKCP_CMD_ACK:ack分片 IKCP_CMD_WASK请求告知窗口大小 IKCP_CMD_WINS:告知窗口大小
+	IUINT32 frg;            // 分片的编号，当输出数据大于 MSS 时，需要将数据进行分片，frg 记录了分片时的倒序序号
+	IUINT32 wnd;            // 剩余接收窗口大小(接收窗口大小-接收队列大小)
+	IUINT32 ts;             // 记录了发送时的时间戳，用来估计 RTT
+	IUINT32 sn;             // message分片segment的序号，按1累次递增 
+	IUINT32 una;            // 待接收消息序号(接收滑动窗口左端)。对于未丢包的网络来说，una是下一个可接收的序号，如收到sn=10的包，una为11 
+	IUINT32 len;            // 数据长度 
+	IUINT32 resendts;       // 下一次重发该报文的时间
+	IUINT32 rto;            // 重传超时时间 
+	IUINT32 fastack;        // 记录了该报文在收到 ACK 时被跳过了几次，用于快重传 
+	IUINT32 xmit;           // 记录了该报文被传输了几次 
+	char data[1];           // 数据
 };
 
 
 //---------------------------------------------------------------------
 // IKCPCB
+// IKCPCB是KCP中最重要的结构，也是在会话开始就创建的对象，代表着这次会话，所以这个结构体体现了一个会话所需要涉及到的所有组件
 //---------------------------------------------------------------------
 struct IKCPCB
 {
-	IUINT32 conv, mtu, mss, state;
+	IUINT32 conv, 
+    IUINT32 mtu, mss;             // mtu: IP层最大传输单元, mss: 传输层提交给IP层最大分段大小, 通常是server 和 client协商双方mss的最小值
+    IUINT32 state;                // 连接状态（0xFFFFFFFF表示断开连接）
 	IUINT32 snd_una, snd_nxt, rcv_nxt;
 	IUINT32 ts_recent, ts_lastack, ssthresh;
 	IINT32 rx_rttval, rx_srtt, rx_rto, rx_minrto;
 	IUINT32 snd_wnd, rcv_wnd, rmt_wnd, cwnd, probe;
-	IUINT32 current, interval, ts_flush, xmit;
+	IUINT32 current, xmit; 
+    IUINT32 interval;               // interval: 内部flush刷新间隔，对系统循环效率有非常重要影响
+    IUINT32 ts_flush;               // ts_flush: 下次flush刷新时间戳
 	IUINT32 nrcv_buf, nsnd_buf;
 	IUINT32 nrcv_que, nsnd_que;
-	IUINT32 nodelay, updated;
+	IUINT32 nodelay;                // 是否启动无延迟模式。无延迟模式rtomin将设置为0，拥塞控制不启动
+	IUINT32 updated;                // 是否调用过update函数的标识 
 	IUINT32 ts_probe, probe_wait;
 	IUINT32 dead_link, incr;
-	struct IQUEUEHEAD snd_queue;
-	struct IQUEUEHEAD rcv_queue;
-	struct IQUEUEHEAD snd_buf;
-	struct IQUEUEHEAD rcv_buf;
-	IUINT32 *acklist;
-	IUINT32 ackcount;
-	IUINT32 ackblock;
+	struct IQUEUEHEAD snd_queue;    // 发送消息的队列
+	struct IQUEUEHEAD rcv_queue;    // 接收消息的队列
+	struct IQUEUEHEAD snd_buf;      // 发送消息的缓存
+	struct IQUEUEHEAD rcv_buf;      // 接收消息的缓存
+	IUINT32 *acklist;               // 当收到一个数据报文时，将其对应的 ACK 报文的 sn 号以及时间戳 ts 同时加入到acklist 中，即形成如 [sn1, ts1, sn2, ts2 …] 的列表
+	IUINT32 ackcount;               // 记录 acklist 中存放的 ACK 报文的数量
+	IUINT32 ackblock;               // acklist 数组的可用长度，当 acklist 的容量不足时，需要进行扩容
 	void *user;
 	char *buffer;
-	int fastresend;
+	int fastresend;                           // 触发快速重传的重复ACK个数
 	int fastlimit;
-	int nocwnd, stream;
+	int nocwnd, stream;                       // nocwnd: 取消拥塞控制
 	int logmask;
 	int (*output)(const char *buf, int len, struct IKCPCB *kcp, void *user);
 	void (*writelog)(const char *log, struct IKCPCB *kcp, void *user);
@@ -395,6 +412,13 @@ int ikcp_waitsnd(const ikcpcb *kcp);
 // interval: internal update timer interval in millisec, default is 100ms 
 // resend: 0:disable fast resend(default), 1:enable fast resend
 // nc: 0:normal congestion control(default), 1:disable congestion control
+// 工作模式
+// nodelay ：是否启用 nodelay模式，0不启用；1启用。
+// interval ：协议内部工作的 interval，单位毫秒，比如 10ms或者 20ms
+// resend ：快速重传模式，默认0关闭，可以设置2（2次ACK跨越将会直接重传）
+// nc ：是否关闭流控，默认是0代表不关闭，1代表关闭。
+// 普通模式： ikcp_nodelay(kcp, 0, 40, 0, 0);
+// 极速模式： ikcp_nodelay(kcp, 1, 10, 2, 1);
 int ikcp_nodelay(ikcpcb *kcp, int nodelay, int interval, int resend, int nc);
 
 
