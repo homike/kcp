@@ -155,7 +155,7 @@ typedef struct IQUEUEHEAD iqueue_head;
 
 #define ICONTAINEROF(ptr, type, member) ( \
 		(type*)( ((char*)((type*)ptr)) - IOFFSETOF(type, member)) )
-
+// 用于在已知结构体里面成员member和该成员指针ptr（就是地址）和结构体类型type, 返回该成员所在的结构体的指针（就是地址）
 #define IQUEUE_ENTRY(ptr, type, member) ICONTAINEROF(ptr, type, member)
 
 
@@ -300,18 +300,30 @@ struct IKCPSEG
 //---------------------------------------------------------------------
 struct IKCPCB
 {
-	IUINT32 conv, 
-    IUINT32 mtu, mss;             // mtu: IP层最大传输单元, mss: 传输层提交给IP层最大分段大小, 通常是server 和 client协商双方mss的最小值
-    IUINT32 state;                // 连接状态（0xFFFFFFFF表示断开连接）
-	IUINT32 snd_una, snd_nxt, rcv_nxt;
-	IUINT32 ts_recent, ts_lastack, ssthresh;
-	IINT32 rx_rttval, rx_srtt, rx_rto, rx_minrto;
-	IUINT32 snd_wnd, rcv_wnd, rmt_wnd, cwnd, probe;
+	IUINT32 conv,                   // 标识这个会话
+    IUINT32 mtu, mss;               // mtu: IP层最大传输单元, mss: 传输层提交给IP层最大分段大小, 通常是server 和 client协商双方mss的最小值
+    IUINT32 state;                  // 连接状态（0xFFFFFFFF表示断开连接）
+	IUINT32 snd_una,                // 第一个未确认的包 
+    IUINT32 snd_nxt,                // 下一个待分配的包的序号；
+    IUINT32 rcv_nxt;                // 待接收消息序号。为了保证包的顺序，接收方会维护一个接收窗口，接收窗口有一个起始序号rcv_nxt（待接收消息序号）以及尾序号 rcv_nxt + rcv_wnd（接收窗口大小）；
+	IUINT32 ts_recent;
+    IUINT32 ts_lastack;
+    IUINT32 ssthresh;               // 拥塞窗口阈值，以包为单位（TCP以字节为单位）
+	IINT32  rx_rttval;              // RTT的变化量，代表连接的抖动情况
+    IINT32  rx_srtt,                // smoothed round trip time，平滑后的RTT
+    IINT32  rx_rto,                 // 由ACK接收延迟计算出来的重传超时时间
+    IINT32  rx_minrto;              // 最小重传超时时间
+	IUINT32 snd_wnd;                // 发送窗口大小
+    IUINT32 rcv_wnd;                // 接收窗口大小
+    IUINT32 rmt_wnd;                // 远端接收窗口大小
+    IUINT32 cwnd;                   // 拥塞窗口大小
+    IUINT32 probe;                  // 探查变量，IKCP_ASK_TELL表示告知远端窗口大小。IKCP_ASK_SEND表示请求远端告知窗口大小
 	IUINT32 current, xmit; 
     IUINT32 interval;               // interval: 内部flush刷新间隔，对系统循环效率有非常重要影响
     IUINT32 ts_flush;               // ts_flush: 下次flush刷新时间戳
 	IUINT32 nrcv_buf, nsnd_buf;
-	IUINT32 nrcv_que, nsnd_que;
+	IUINT32 nrcv_que,               // 接收队列中消息数量; 
+    IUINT32 nsnd_que;               // 发送队列中消息数量；
 	IUINT32 nodelay;                // 是否启动无延迟模式。无延迟模式rtomin将设置为0，拥塞控制不启动
 	IUINT32 updated;                // 是否调用过update函数的标识 
 	IUINT32 ts_probe, probe_wait;
@@ -325,9 +337,9 @@ struct IKCPCB
 	IUINT32 ackblock;               // acklist 数组的可用长度，当 acklist 的容量不足时，需要进行扩容
 	void *user;
 	char *buffer;
-	int fastresend;                           // 触发快速重传的重复ACK个数
+	int fastresend;                 // 触发快速重传的重复ACK个数
 	int fastlimit;
-	int nocwnd, stream;                       // nocwnd: 取消拥塞控制
+	int nocwnd, stream;             // nocwnd: 取消拥塞控制
 	int logmask;
 	int (*output)(const char *buf, int len, struct IKCPCB *kcp, void *user);
 	void (*writelog)(const char *log, struct IKCPCB *kcp, void *user);
