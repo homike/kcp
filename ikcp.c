@@ -792,7 +792,7 @@ int ikcp_input(ikcpcb *kcp, const char *data, long size)
 		if (size < (int)IKCP_OVERHEAD) break;
 
 		data = ikcp_decode32u(data, &conv);
-		if (conv != kcp->conv) return -1;
+		if (conv != kcp->conv) return -1;  // 比较会话标识符是否相同
 
 		data = ikcp_decode8u(data, &cmd);
 		data = ikcp_decode8u(data, &frg);
@@ -812,14 +812,14 @@ int ikcp_input(ikcpcb *kcp, const char *data, long size)
 
 		kcp->rmt_wnd = wnd;
 		ikcp_parse_una(kcp, una);
-		ikcp_shrink_buf(kcp);
+		ikcp_shrink_buf(kcp); // 更新snd_una, 发送窗口左侧序号, 可能更新也可能不更新, TODO: 根据ikcp_parse_una的返回值, 决定是否调用?
 
 		if (cmd == IKCP_CMD_ACK) {
 			if (_itimediff(kcp->current, ts) >= 0) {
 				ikcp_update_ack(kcp, _itimediff(kcp->current, ts));  
 			}
-			ikcp_parse_ack(kcp, sn);  // 更新 rtt
-			ikcp_shrink_buf(kcp);     // 更新控制块的 snd_una
+			ikcp_parse_ack(kcp, sn);  // ack确认该包已收到
+			ikcp_shrink_buf(kcp);     // 更新snd_una
 			if (flag == 0) {
 				flag = 1;
 				maxack = sn;         // 记录最大的 ACK 编号
@@ -1001,6 +1001,8 @@ void ikcp_flush(ikcpcb *kcp)
 	kcp->ackcount = 0;
 
 	// probe window size (if remote window size equals zero)
+    // 3. 检查当前是否需要对远端窗口进行探测。
+    // -------------------------------->
 	if (kcp->rmt_wnd == 0) {
 		if (kcp->probe_wait == 0) { // 初始化探测间隔和下一次探测时间
 			kcp->probe_wait = IKCP_PROBE_INIT;
@@ -1043,7 +1045,7 @@ void ikcp_flush(ikcpcb *kcp)
 		}
 		ptr = ikcp_encode_seg(ptr, &seg);
 	}
-
+    // <-----------------------------------
 	kcp->probe = 0;
 
 	// calculate window size

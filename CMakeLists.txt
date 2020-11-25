@@ -1,6 +1,6 @@
 CMAKE_MINIMUM_REQUIRED(VERSION 2.6)
 
-project(kcp LANGUAGES C)
+#project(kcp LANGUAGES C)
 
 include(CTest)
 include(GNUInstallDirs)
