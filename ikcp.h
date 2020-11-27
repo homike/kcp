@@ -283,8 +283,8 @@ struct IKCPSEG
 	IUINT32 frg;            // 分片的编号，当输出数据大于 MSS 时，需要将数据进行分片，frg 记录了分片时的倒序序号
 	IUINT32 wnd;            // 剩余接收窗口大小(接收窗口大小-接收队列大小)
 	IUINT32 ts;             // 记录了发送时的时间戳，用来估计 RTT
-	IUINT32 sn;             // message分片segment的序号，按1累次递增 
-	IUINT32 una;            // 待接收消息序号(接收滑动窗口左端)。对于未丢包的网络来说，una是下一个可接收的序号，如收到sn=10的包，una为11 
+	IUINT32 sn;             // 序列号，按1累次递增 
+	IUINT32 una;            // 待接收消息序号(接收滑动窗口左端)。对于未丢包的网络来说，una是下一个可接收的序号，如收到sn=10的包，那么之后的包una为11 
 	IUINT32 len;            // 数据长度 
 	IUINT32 resendts;       // 下一次重发该报文的时间
 	IUINT32 rto;            // 重传超时时间 
